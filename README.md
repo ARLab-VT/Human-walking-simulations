@@ -3,6 +3,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-76B900.svg" alt="License"></a>
   <a href="https://cnai.epfl.ch/mm-blog/"><img src="https://img.shields.io/badge/MuscleMimic-Blog-blue" alt="MuscleMimic Blog"></a>
   <a href="https://arxiv.org/abs/2603.25544"><img src="https://img.shields.io/badge/Preprint-arXiv-b31b1b" alt="Preprint"></a>
+  <a href="https://huggingface.co/spaces/amathislab/musclemimic_space">
+  <img src="https://img.shields.io/badge/Hugging%20Face-Space-2D2D2D?style=flat-square&logo=huggingface&logoColor=FFD21E&labelColor=2D2D2D" alt="Hugging Face Space">
+  </a>
 </p>
 
 # MuscleMimic: Unlocking full-body musculoskeletal motor learning at scale
