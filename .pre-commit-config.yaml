@@ -57,7 +57,8 @@ files: |
     musclemimic/environments/humanoids/bimanual\.py|
     musclemimic/utils/metrics\.py|
     tests/unit/test_metrics\.py|
-    loco_mujoco/smpl/retargeting\.py
+    loco_mujoco/smpl/retargeting\.py|
+    musclemimic/runner/engine\.py
   )$
 
 # Always exclude these directories

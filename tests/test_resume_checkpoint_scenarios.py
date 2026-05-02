@@ -486,7 +486,7 @@ def test_compute_resume_info_stored_target_used_on_auto_resume():
     }
 
     completed, remaining, base_ts, base_step, target = runner._compute_resume_info(
-        config, agent_state, resume_info, train_state,
+        config, agent_state, resume_info, train_state, preserve_checkpoint_target=True,
     )
 
     assert completed == 3
@@ -533,6 +533,79 @@ def test_compute_resume_info_first_explicit_resume_uses_additional():
     assert target == 416  # 320 + 96
 
 
+def test_compute_resume_info_explicit_resume_ignores_stored_target():
+    """Explicit resume should use the new relative budget unless absolute mode is enabled."""
+
+    config = OmegaConf.create(
+        {
+            "num_updates": 10,
+            "total_timesteps": 160,
+            "num_envs": 4,
+            "num_steps": 8,
+            "num_minibatches": 1,
+            "update_epochs": 1,
+        }
+    )
+    train_state = SimpleNamespace(step=jnp.asarray(3, dtype=jnp.int32))
+    agent_state = SimpleNamespace(train_state=train_state)
+    resume_info = {
+        "update_number": 3,
+        "global_timestep": 96,
+        "target_global_timestep": 416,
+        "num_envs": 4,
+        "num_steps": 8,
+        "num_minibatches": 1,
+        "update_epochs": 1,
+    }
+
+    completed, remaining, base_ts, base_step, target = runner._compute_resume_info(
+        config, agent_state, resume_info, train_state, preserve_checkpoint_target=False,
+    )
+
+    assert completed == 3
+    assert remaining == 5  # (160 + 96 - 96) / 32 = 5
+    assert base_ts == 96
+    assert base_step == 3
+    assert target == 256
+
+
+def test_compute_resume_info_absolute_budget_overrides_stored_target():
+    """Absolute mode should ignore any checkpoint-stored target budget."""
+
+    config = OmegaConf.create(
+        {
+            "num_updates": 10,
+            "total_timesteps": 320,
+            "total_timesteps_is_absolute": True,
+            "num_envs": 4,
+            "num_steps": 8,
+            "num_minibatches": 1,
+            "update_epochs": 1,
+        }
+    )
+    train_state = SimpleNamespace(step=jnp.asarray(3, dtype=jnp.int32))
+    agent_state = SimpleNamespace(train_state=train_state)
+    resume_info = {
+        "update_number": 3,
+        "global_timestep": 96,
+        "target_global_timestep": 416,
+        "num_envs": 4,
+        "num_steps": 8,
+        "num_minibatches": 1,
+        "update_epochs": 1,
+    }
+
+    completed, remaining, base_ts, base_step, target = runner._compute_resume_info(
+        config, agent_state, resume_info, train_state, preserve_checkpoint_target=True,
+    )
+
+    assert completed == 3
+    assert remaining == 7  # (320 - 96) / 32 = 7
+    assert base_ts == 96
+    assert base_step == 3
+    assert target == 320
+
+
 def test_compute_resume_info_finetune_preempt_preserves_target():
     """Scenario D: finetune preempted mid-run, auto-resume reads stored target."""
 
@@ -561,7 +634,7 @@ def test_compute_resume_info_finetune_preempt_preserves_target():
     }
 
     completed, remaining, base_ts, base_step, target = runner._compute_resume_info(
-        config, agent_state, resume_info, train_state,
+        config, agent_state, resume_info, train_state, preserve_checkpoint_target=True,
     )
 
     assert target == 1500

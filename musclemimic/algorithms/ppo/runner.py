@@ -240,6 +240,7 @@ def train(
         agent_state,
         resume_info,
         train_state,
+        preserve_checkpoint_target=not apply_resume_resets,
     )
 
     if remaining_updates == 0:
@@ -783,7 +784,25 @@ def _init_train_state(rng, env, network, tx, agent_state, config=None, apply_res
         )
 
 
-def _compute_resume_info(config, agent_state, resume_info, train_state):
+def _resolve_target_global_timestep(
+    config,
+    resume_info,
+    base_global_ts0,
+    preserve_checkpoint_target=False,
+):
+    """Resolve the absolute target budget for the current resume path."""
+    configured_total_timesteps = int(config.total_timesteps)
+    if bool(config.get("total_timesteps_is_absolute", False)):
+        return configured_total_timesteps
+
+    stored_target = int(resume_info.get("target_global_timestep", 0) or 0)
+    if preserve_checkpoint_target and stored_target > 0:
+        return stored_target
+
+    return configured_total_timesteps + int(base_global_ts0)
+
+
+def _compute_resume_info(config, agent_state, resume_info, train_state, preserve_checkpoint_target=False):
     """Compute resume state information.
 
     Returns:
@@ -799,17 +818,12 @@ def _compute_resume_info(config, agent_state, resume_info, train_state):
     if agent_state is not None and resume_info is not None:
         current_config = TrainingConfig.from_experiment_config(config)
         base_global_ts0 = int(resume_info["global_timestep"])
-
-        # If the checkpoint already records the absolute training budget,
-        # use it directly.  Otherwise compute it from config (first resume).
-        stored_target = int(resume_info.get("target_global_timestep", 0) or 0)
-        if stored_target > 0:
-            target_global_ts = stored_target
-        else:
-            # First resume from this checkpoint -> resolve the budget now.
-            is_absolute = config.get("total_timesteps_is_absolute", False)
-            if not is_absolute:
-                target_global_ts = int(config.total_timesteps) + base_global_ts0
+        target_global_ts = _resolve_target_global_timestep(
+            config,
+            resume_info,
+            base_global_ts0,
+            preserve_checkpoint_target=preserve_checkpoint_target,
+        )
 
         completed_updates, remaining_updates, config_changed = compute_resume_state(
             checkpoint_metadata=resume_info,

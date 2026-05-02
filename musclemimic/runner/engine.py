@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -15,8 +15,6 @@ from musclemimic.algorithms.common.checkpoint_hooks import create_jax_checkpoint
 from musclemimic.utils.logging import setup_logger
 from musclemimic.utils.metrics import MetricsHandler
 
-logger = setup_logger(__name__)
-
 from .checkpointing import (
     config_hash,
     find_latest_checkpoint,
@@ -26,6 +24,8 @@ from .checkpointing import (
     write_manifest,
 )
 from .logging import ExperimentHooks
+
+logger = setup_logger(__name__)
 
 
 def setup_jax_cache() -> None:
@@ -103,7 +103,9 @@ def _auto_set_skip_body_data(config) -> None:
     # Auto-enable skip_body_data
     with open_dict(config):
         config.experiment.task_factory.params.amass_dataset_conf.skip_body_data = True
-    logger.info("[Trajectory] Auto-enabled skip_body_data (validation doesn't use BodyPosition/BodyOrientation/BodyVelocity).")
+    logger.info(
+        "[Trajectory] Auto-enabled skip_body_data (validation doesn't use BodyPosition/BodyOrientation/BodyVelocity)."
+    )
 
 
 def _has_validation_dataset_override(val_cfg) -> bool:
@@ -236,7 +238,8 @@ def instantiate_validation_env(config, share_trajectory: bool = False) -> Any:
             if val_dataset is not None:
                 task_factory_params[key] = (
                     OmegaConf.to_container(val_dataset, resolve=True)
-                    if OmegaConf.is_config(val_dataset) else val_dataset
+                    if OmegaConf.is_config(val_dataset)
+                    else val_dataset
                 )
                 logger.info(f"Using validation-specific {key}.")
 
@@ -299,9 +302,7 @@ def build_logging_callback(env, config, agent_conf, use_wandb, hooks: Experiment
             current_timestep = int(metrics_dict.get("jax_raw_timestep", 0.0))
         else:
             # Use global timestep including checkpoint offset (max_timestep)
-            current_timestep = int(
-                metrics_dict.get("max_timestep", metrics_dict.get("jax_raw_timestep", 0.0))
-            )
+            current_timestep = int(metrics_dict.get("max_timestep", metrics_dict.get("jax_raw_timestep", 0.0)))
 
         jax_timestep = metrics_dict.get("jax_raw_timestep", metrics_dict.get("max_timestep", 0.0))
         log_dict: dict[str, Any] = {
@@ -426,7 +427,7 @@ def run_training(train_fn, rngs):
 
 def _generate_run_suffix() -> str:
     """Return a per-run unique suffix for checkpoint directories."""
-    ts = datetime.now(timezone.utc).strftime("%y%m%dT%H%M%S")
+    ts = datetime.now(UTC).strftime("%y%m%dT%H%M%S")
     pid = os.getpid()
     job_num = os.environ.get("HYDRA_JOB_NUM")
     job_part = f"-job{job_num}" if job_num is not None else ""
@@ -456,28 +457,31 @@ def run_experiment(config, hooks: ExperimentHooks):
     agent_conf = build_agent_conf(algorithm_cls, env, config)
 
     # Report total motion duration (post-concatenation), before training starts
-    if (
-        hasattr(env, "th")
-        and env.th is not None
-        and hasattr(env.th, "traj")
-        and env.th.traj is not None
-        and hasattr(env.th.traj, "info")
-        and hasattr(env.th.traj, "data")
-        and hasattr(env.th.traj.info, "frequency")
-        and hasattr(env.th.traj.data, "qpos")
-    ):
-        freq = float(env.th.traj.info.frequency)
-        frames = int(env.th.traj.data.qpos.shape[0])
-        if freq > 0.0 and frames > 0:
-            duration_sec = (frames - 1) / freq
-            duration_min = duration_sec / 60.0
-            logger.info(
-                f"Total concatenated motion duration: {duration_min:.2f} minutes "
-                f"({duration_sec:.1f} s, {frames} frames @ {freq:.1f} Hz)"
-            )
+    for label, _env in [("Train", env), ("Validation", val_env)]:
+        if (
+            _env is not None
+            and hasattr(_env, "th")
+            and _env.th is not None
+            and hasattr(_env.th, "traj")
+            and _env.th.traj is not None
+            and hasattr(_env.th.traj, "info")
+            and hasattr(_env.th.traj, "data")
+            and hasattr(_env.th.traj.info, "frequency")
+            and hasattr(_env.th.traj.data, "qpos")
+        ):
+            freq = float(_env.th.traj.info.frequency)
+            frames = int(_env.th.traj.data.qpos.shape[0])
+            if freq > 0.0 and frames > 0:
+                duration_sec = (frames - 1) / freq
+                duration_min = duration_sec / 60.0
+                logger.info(
+                    f"[{label}] total concatenated motion duration: {duration_min:.2f} minutes "
+                    f"({duration_sec:.1f} s, {frames} frames @ {freq:.1f} Hz)"
+                )
 
     # Metrics + hooks + video
-    mh = build_metrics_handler(config, env)
+    metrics_env = val_env if val_env is not None else env
+    mh = build_metrics_handler(config, metrics_env)
     # Build recorder with Hydra output dir
     from hydra.core.hydra_config import HydraConfig
 
@@ -559,7 +563,7 @@ def run_experiment(config, hooks: ExperimentHooks):
 
     # Seeds and training
     rngs = compute_training_rngs(config)
-    out = run_training(train_fn, rngs)
+    run_training(train_fn, rngs)
 
     # Close any cached checkpoint manager created during training (host-side cleanup)
     cache_entry = getattr(create_jax_checkpoint_host_callback, "__cached_instance__", None)
