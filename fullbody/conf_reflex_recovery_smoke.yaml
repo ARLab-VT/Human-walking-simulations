@@ -1,0 +1,56 @@
+defaults:
+  - conf_fullbody_gmr
+  - _self_
+
+# Short, additive validation configuration. It does not start full training.
+wandb:
+  mode: offline
+  tags: ["reflex-recovery", "smoke"]
+
+experiment:
+  seed: 0
+  total_timesteps: 4096
+  env_params:
+    num_envs: 8
+    horizon: 500
+    perturbation_params:
+      enabled: false
+      joint: ankle
+      side: right
+      direction: 1
+      magnitude_nm: 10.0
+      duration_s: 0.05
+      onset_mode: time
+      onset_time_s: 1.0
+      waveform: half_sine
+    reflex_params:
+      enabled: false
+      scale: 1.0
+      group_limit: 0.25
+      muscle_limit: 0.25
+      rate_limit_per_s: 5.0
+      stance_gains: {}
+      swing_gains: {}
+  ppo_config:
+    num_steps: 32
+    num_minibatches: 4
+  reflex_recovery:
+    enabled: true
+    base_checkpoint: "hf://amathislab/mm-fullbody-base"
+    motion_path: "KIT/314/walking_medium09_poses"
+    reflex:
+      enabled: false
+      scale: 1.0
+      delay_s: 0.03
+    recovery:
+      enabled: false
+    perturbation:
+      enabled: false
+      joint: ankle
+      side: right
+      direction: 1
+      magnitude_nm: 10.0
+      duration_s: 0.05
+      onset_mode: time
+      onset_time_s: 1.0
+      waveform: half_sine

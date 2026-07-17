@@ -1,0 +1,14 @@
+defaults:
+  - conf_reflex_recovery_train
+  - _self_
+
+wandb:
+  mode: offline
+  tags: ["reflex-recovery", "eval"]
+
+experiment:
+  reflex_recovery:
+    deterministic: true
+    evaluation_seeds: [0, 1, 2, 3, 4]
+    save_rollout: true
+    save_video: true

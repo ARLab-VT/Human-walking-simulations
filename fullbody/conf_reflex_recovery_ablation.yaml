@@ -1,0 +1,19 @@
+defaults:
+  - conf_reflex_recovery_eval
+  - _self_
+
+wandb:
+  tags: ["reflex-recovery", "ablation"]
+
+experiment:
+  reflex_recovery:
+    conditions:
+      - base_only
+      - base_plus_reflex
+      - base_plus_recovery
+      - base_plus_reflex_plus_recovery
+      - base_plus_reflex_plus_recovery_fixed_imitation
+      - base_plus_reflex_plus_recovery_relaxed_imitation
+    toe_conditions: [native]
+    reflex_gain_scales: [0.75, 1.0, 1.25]
+    reflex_delays_s: [0.0, 0.03, 0.06]
