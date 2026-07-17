@@ -1,6 +1,7 @@
 import os
 import subprocess
 import datetime
+import shutil
 from pathlib import Path
 
 
@@ -135,10 +136,23 @@ class VideoRecorder(object):
         # compress video
         if self._compress and self._video_writer_path is not None:
             try:
+                ffmpeg = shutil.which("ffmpeg")
+                if ffmpeg is None:
+                    try:
+                        import imageio_ffmpeg
+
+                        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+                    except ImportError:
+                        ffmpeg = None
+                if ffmpeg is None:
+                    print("Video compression skipped: ffmpeg is unavailable; keeping the OpenCV MP4.")
+                    self._video_writer = None
+                    self._counter += 1
+                    return self._video_writer_path
                 tmp_file = str(self._path / "tmp_") + self._video_name + ".mp4"
                 subprocess.run(
                     [
-                        "ffmpeg",
+                        ffmpeg,
                         "-i", self._video_writer_path,  # Input video
                         "-c:v", "libx264",  # H.264 codec
                         "-profile:v", "baseline",  # Set to Baseline profile (can change to main if needed)

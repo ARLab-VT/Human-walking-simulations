@@ -1,0 +1,227 @@
+defaults:
+  - conf_fullbody_gmr
+  - _self_
+
+# Lower-body walking setup for later disturbance-rejection training.
+#
+# Reviewer-driven design choices:
+# - Toe joints are kept in the model and tracked through left/right toe mimic sites.
+# - Toe/foot touch sensors and muscle state observations are enabled for reflex-relevant feedback.
+# - The policy action space is restricted to lower-body muscles, but the full body remains dynamic.
+# - Upper-body style tracking is relaxed by removing arm/hand sites from goal and reward tracking.
+# - Termination thresholds are kept moderately loose so recovery motions are not killed immediately.
+
+wandb:
+  tags: ["fullbody", "gmr", "lowerbody", "walking", "disturbance-ready"]
+  mode: "offline"
+
+experiment:
+  task_factory:
+    params:
+      amass_dataset_conf:
+        dataset_group: null
+        rel_dataset_path:
+          - "KIT/314/walking_medium09_poses"
+          - "KIT/348/turn_right03_poses"
+          - "KIT/4/WalkInCounterClockwiseCircle04_poses"
+
+  env_params:
+    # Keep the full MyoFullBody physics model, including toes, torso, and passive arms.
+    env_name: MjxMyoFullBody
+    disable_fingers: true
+    headless: true
+
+    # Start smaller than the large base config. Increase num_envs after the smoke test.
+    num_envs: 512
+    horizon: 30000
+    mjx_backend: warp
+
+    # 500 Hz physics, 100 Hz control. This is still not a true spinal reflex loop,
+    # but it gives the policy contact/proprioceptive feedback at a fast control rate.
+    timestep: 0.002
+    n_substeps: 5
+
+    enable_joint_pos_observations: true
+    enable_joint_vel_observations: true
+    enable_muscle_length_observations: true
+    enable_muscle_velocity_observations: true
+    enable_muscle_force_observations: true
+    enable_muscle_excitation_observations: true
+    enable_muscle_activation_observations: true
+    enable_touch_sensor_observations: true
+
+    # Lower-body muscle control only. The arms/torso still move through passive dynamics.
+    actuation_spec:
+      - addbrev_r
+      - addlong_r
+      - addmagDist_r
+      - addmagIsch_r
+      - addmagMid_r
+      - addmagProx_r
+      - bflh_r
+      - bfsh_r
+      - edl_r
+      - ehl_r
+      - fdl_r
+      - fhl_r
+      - gaslat_r
+      - gasmed_r
+      - glmax1_r
+      - glmax2_r
+      - glmax3_r
+      - glmed1_r
+      - glmed2_r
+      - glmed3_r
+      - glmin1_r
+      - glmin2_r
+      - glmin3_r
+      - grac_r
+      - iliacus_r
+      - perbrev_r
+      - perlong_r
+      - piri_r
+      - psoas_r
+      - recfem_r
+      - sart_r
+      - semimem_r
+      - semiten_r
+      - soleus_r
+      - tfl_r
+      - tibant_r
+      - tibpost_r
+      - vasint_r
+      - vaslat_r
+      - vasmed_r
+      - addbrev_l
+      - addlong_l
+      - addmagDist_l
+      - addmagIsch_l
+      - addmagMid_l
+      - addmagProx_l
+      - bflh_l
+      - bfsh_l
+      - edl_l
+      - ehl_l
+      - fdl_l
+      - fhl_l
+      - gaslat_l
+      - gasmed_l
+      - glmax1_l
+      - glmax2_l
+      - glmax3_l
+      - glmed1_l
+      - glmed2_l
+      - glmed3_l
+      - glmin1_l
+      - glmin2_l
+      - glmin3_l
+      - grac_l
+      - iliacus_l
+      - perbrev_l
+      - perlong_l
+      - piri_l
+      - psoas_l
+      - recfem_l
+      - sart_l
+      - semimem_l
+      - semiten_l
+      - soleus_l
+      - tfl_l
+      - tibant_l
+      - tibpost_l
+      - vasint_l
+      - vaslat_l
+      - vasmed_l
+
+    goal_params:
+      n_step_lookahead: 5
+      n_step_stride: 20
+      upper_body_xml_name: torso
+      enable_motion_phase: true
+      use_concise_lookahead: true
+      # Track locomotion-critical sites, including toes. Do not track arms/hands.
+      sites_for_mimic:
+        - pelvis_mimic
+        - upper_body_mimic
+        - head_mimic
+        - left_hip_mimic
+        - left_knee_mimic
+        - left_ankle_mimic
+        - left_toes_mimic
+        - right_hip_mimic
+        - right_knee_mimic
+        - right_ankle_mimic
+        - right_toes_mimic
+
+    reward_params:
+      # Less rigid than the base imitation config: emphasize body/foot site tracking
+      # and root stability, while avoiding full-joint style matching domination.
+      qpos_w_sum: 0.03
+      qvel_w_sum: 0.05
+      root_pos_w_sum: 0.15
+      root_vel_w_sum: 0.15
+      rpos_w_sum: 0.55
+      rquat_w_sum: 0.02
+      rvel_w_sum: 0.05
+      action_rate_coeff: 0.002
+      activation_energy_coeff: 0.001
+      use_mean_exp_reward: false
+      sites_for_mimic:
+        - pelvis_mimic
+        - upper_body_mimic
+        - head_mimic
+        - left_hip_mimic
+        - left_knee_mimic
+        - left_ankle_mimic
+        - left_toes_mimic
+        - right_hip_mimic
+        - right_knee_mimic
+        - right_ankle_mimic
+        - right_toes_mimic
+
+    terminal_state_type: MeanRelativeSiteDeviationWithRootTerminalStateHandler
+    terminal_state_params:
+      mean_site_deviation_threshold: 1.2
+      root_deviation_threshold: 1.2
+      root_orientation_threshold: 1.2
+      enable_site_check: true
+
+  # Smaller starter network for a first walking run. Scale back up if learning plateaus.
+  actor_hidden_layers: [1024, 1024, 1024, 1024, 1024]
+  critic_hidden_layers: [1024, 1024, 1024, 1024, 1024]
+
+  total_timesteps: 200000000
+  ppo_config:
+    num_steps: 80
+    num_minibatches: 32
+
+  validation:
+    num_envs: 16
+    num_steps: 500
+    num: 16
+    video_length: 1000
+    video_frequency: 1
+    amass_dataset_conf:
+      dataset_group: null
+      rel_dataset_path:
+        - "KIT/314/walking_medium09_poses"
+        - "KIT/348/turn_right03_poses"
+        - "KIT/4/WalkInCounterClockwiseCircle04_poses"
+    terminal_state_type: MeanRelativeSiteDeviationWithRootTerminalStateHandler
+    terminal_state_params:
+      mean_site_deviation_threshold: 1.0
+      root_deviation_threshold: 1.0
+      root_orientation_threshold: 1.0
+      enable_site_check: true
+    rel_site_names:
+      - pelvis_mimic
+      - upper_body_mimic
+      - head_mimic
+      - left_hip_mimic
+      - left_knee_mimic
+      - left_ankle_mimic
+      - left_toes_mimic
+      - right_hip_mimic
+      - right_knee_mimic
+      - right_ankle_mimic
+      - right_toes_mimic

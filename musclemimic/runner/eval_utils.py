@@ -861,6 +861,12 @@ def run_with_trajectory_export(
         episode_joint_velocities = []
         episode_joint_accelerations = []
         episode_timesteps = []
+        episode_perturbation_torque_nm = []
+        episode_perturbation_onset_s = []
+        episode_reflex_group_actions = []
+        episode_reflex_saturation_fraction = []
+        episode_done = []
+        episode_absorbing = []
 
         episode_step_count = 0
         episode_reward = 0.0
@@ -887,6 +893,14 @@ def run_with_trajectory_export(
             episode_muscle_activations.append(np.array(env_data.act))
 
             episode_rewards.append(float(reward))
+            episode_perturbation_torque_nm.append(float(info.get("perturbation_torque_nm", 0.0)))
+            episode_perturbation_onset_s.append(float(info.get("perturbation_onset_s", -1.0)))
+            episode_reflex_group_actions.append(
+                np.asarray(info.get("reflex_group_action", np.zeros(0, dtype=np.float32)), dtype=np.float32)
+            )
+            episode_reflex_saturation_fraction.append(float(info.get("reflex_saturation_fraction", 0.0)))
+            episode_done.append(bool(done))
+            episode_absorbing.append(bool(absorbing))
             episode_reward += float(reward)
             episode_step_count += 1
             total_step_count += 1
@@ -913,6 +927,14 @@ def run_with_trajectory_export(
         all_episodes[f"{episode_prefix}_muscle_activations"] = np.array(episode_muscle_activations)
         all_episodes[f"{episode_prefix}_rewards"] = np.array(episode_rewards)
         all_episodes[f"{episode_prefix}_timesteps"] = np.array(episode_timesteps)
+        all_episodes[f"{episode_prefix}_perturbation_torque_nm"] = np.array(episode_perturbation_torque_nm)
+        all_episodes[f"{episode_prefix}_perturbation_onset_s"] = np.array(episode_perturbation_onset_s)
+        all_episodes[f"{episode_prefix}_reflex_group_actions"] = np.array(episode_reflex_group_actions)
+        all_episodes[f"{episode_prefix}_reflex_saturation_fraction"] = np.array(
+            episode_reflex_saturation_fraction
+        )
+        all_episodes[f"{episode_prefix}_done"] = np.array(episode_done)
+        all_episodes[f"{episode_prefix}_absorbing"] = np.array(episode_absorbing)
 
         episode_info = {
             "episode_id": episode_id,

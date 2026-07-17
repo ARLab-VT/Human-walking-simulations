@@ -29,8 +29,21 @@ logger = setup_logger(__name__)
 
 
 def setup_jax_cache() -> None:
-    cache_dir = os.path.join(Path.home(), ".musclemimic", ".jax_cache")
-    os.makedirs(cache_dir, exist_ok=True)
+    configured_cache_dir = os.environ.get("JAX_COMPILATION_CACHE_DIR")
+    if configured_cache_dir:
+        cache_dir = Path(configured_cache_dir).expanduser()
+    else:
+        musclemimic_home = os.environ.get("MUSCLEMIMIC_HOME")
+        cache_root = Path(musclemimic_home).expanduser() if musclemimic_home else Path.home() / ".musclemimic"
+        cache_dir = cache_root / ".jax_cache"
+
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        cache_dir = Path.cwd() / ".musclemimic" / ".jax_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+    cache_dir = str(cache_dir)
     os.environ["JAX_COMPILATION_CACHE_DIR"] = cache_dir
     jax.config.update("jax_compilation_cache_dir", cache_dir)
     logger.info(f"JAX compilation cache enabled at: {cache_dir}")

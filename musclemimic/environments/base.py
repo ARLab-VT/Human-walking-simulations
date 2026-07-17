@@ -58,6 +58,24 @@ class LocoCarry(MjxAdditionalCarry):
     root_vel_w_sum: jax.Array = struct.field(
         default_factory=lambda: jnp.asarray(0.2, dtype=jnp.float32)
     )
+    # Research disturbance state. Defaults preserve all upstream behavior.
+    perturbation_triggered: jax.Array = struct.field(
+        default_factory=lambda: jnp.asarray(False, dtype=bool)
+    )
+    perturbation_onset_step: jax.Array = struct.field(
+        default_factory=lambda: jnp.asarray(-1, dtype=jnp.int32)
+    )
+    previous_right_foot_contact: jax.Array = struct.field(
+        default_factory=lambda: jnp.asarray(False, dtype=bool)
+    )
+    previous_left_foot_contact: jax.Array = struct.field(
+        default_factory=lambda: jnp.asarray(False, dtype=bool)
+    )
+    previous_reflex_residual: jax.Array | None = None
+    reflex_group_action: jax.Array | None = None
+    reflex_saturation_fraction: jax.Array = struct.field(
+        default_factory=lambda: jnp.asarray(0.0, dtype=jnp.float32)
+    )
 
 
 class LocoEnv(Mjx):

@@ -182,6 +182,21 @@ def main() -> int:
         default=None,
         help="Override n_substeps (control frequency). Default 5 = 100Hz, 10 = 50Hz.",
     )
+    parser.add_argument(
+        "--reflex_recovery_condition",
+        choices=("base_only", "base_perturbed", "base_plus_reflex"),
+        default=None,
+        help="Configure a reproducible reflex-recovery comparison condition.",
+    )
+    parser.add_argument("--perturbation_joint", choices=("hip", "knee", "ankle"), default="ankle")
+    parser.add_argument("--perturbation_side", choices=("left", "right"), default="right")
+    parser.add_argument("--perturbation_direction", type=int, choices=(-1, 1), default=1)
+    parser.add_argument("--perturbation_magnitude_nm", type=float, default=10.0)
+    parser.add_argument("--perturbation_duration_s", type=float, default=0.05)
+    parser.add_argument("--perturbation_onset_phase", type=float, default=0.20)
+    parser.add_argument("--reflex_position_gain", type=float, default=0.05)
+    parser.add_argument("--reflex_velocity_gain", type=float, default=0.01)
+    parser.add_argument("--reflex_scale", type=float, default=1.0)
 
     args = parser.parse_args()
 
@@ -316,6 +331,42 @@ def main() -> int:
         play_env_params["env_name"] = play_env_params["env_name"].replace("Mjx", "")
     if not args.use_mujoco:
         play_env_params["num_envs"] = int(args.num_envs)
+
+    if args.reflex_recovery_condition is not None:
+        perturbation_enabled = args.reflex_recovery_condition != "base_only"
+        reflex_enabled = args.reflex_recovery_condition == "base_plus_reflex"
+        play_env_params["perturbation_params"] = {
+            "enabled": perturbation_enabled,
+            "joint": args.perturbation_joint,
+            "side": args.perturbation_side,
+            "direction": args.perturbation_direction,
+            "magnitude_nm": args.perturbation_magnitude_nm,
+            "duration_s": args.perturbation_duration_s,
+            "onset_mode": "phase",
+            "onset_time_s": None,
+            "onset_phase": args.perturbation_onset_phase,
+            "phase_tolerance": 0.001,
+            "waveform": "half_sine",
+        }
+        play_env_params["reflex_params"] = {
+            "enabled": reflex_enabled,
+            "scale": args.reflex_scale,
+            "group_limit": 0.25,
+            "muscle_limit": 0.25,
+            "rate_limit_per_s": 5.0,
+            "stance_gains": {
+                "position": args.reflex_position_gain,
+                "velocity": args.reflex_velocity_gain,
+            },
+            "swing_gains": {
+                "position": 0.6 * args.reflex_position_gain,
+                "velocity": args.reflex_velocity_gain,
+            },
+        }
+        print(
+            f"Reflex-recovery condition: {args.reflex_recovery_condition} "
+            f"(perturbation={perturbation_enabled}, reflex={reflex_enabled})"
+        )
 
     # Compute actual control_dt (with override if specified)
     actual_control_dt = training_timestep * (args.n_substeps if args.n_substeps else training_n_substeps)

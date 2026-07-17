@@ -4,12 +4,28 @@ MyoFullBody environment - A full-body muscle-actuated humanoid model.
 
 import loco_mujoco
 import mujoco
+import jax.numpy as jnp
+import numpy as np
 from loco_mujoco.core import ObservationType
 from loco_mujoco.core.utils import info_property
 from musclemimic.environments import LocoEnv
 from musclemimic.utils.logging import setup_logger
 from mujoco import MjSpec
 import musclemimic_models
+from musclemimic.research.reflex_recovery.config import PerturbationConfig
+from musclemimic.research.reflex_recovery.muscle_groups import (
+    build_lower_body_groups,
+    distribute_group_action,
+    distribution_matrix,
+)
+from musclemimic.research.reflex_recovery.reflex_controller import ReflexGains, compute_reflex_action
+from musclemimic.research.reflex_recovery.perturbations import (
+    PerturbationState,
+    resolve_joint_dof_index,
+    torque_pulse,
+    triggered_torque,
+    update_perturbation_trigger,
+)
 
 logger = setup_logger(__name__, identifier="[MyoFullBody]")
 
@@ -68,6 +84,8 @@ class MyoFullBody(LocoEnv):
         observation_spec: list[ObservationType] = None,
         actuation_spec: list[str] = None,
         mjx_backend: str = "jax",
+        perturbation_params: dict | None = None,
+        reflex_params: dict | None = None,
         **kwargs,
     ) -> None:
         """
@@ -99,6 +117,9 @@ class MyoFullBody(LocoEnv):
         self._enable_muscle_excitation_observations = enable_muscle_excitation_observations
         self._enable_muscle_activation_observations = enable_muscle_activation_observations
         self._enable_touch_sensor_observations = enable_touch_sensor_observations
+        self._perturbation_config = PerturbationConfig(**(perturbation_params or {}))
+        self._reflex_params = dict(reflex_params or {})
+        self._reflex_enabled = bool(self._reflex_params.get("enabled", False))
 
         # Store mjx_backend for use in _modify_spec_for_mjx
         self.mjx_backend = mjx_backend
@@ -139,6 +160,252 @@ class MyoFullBody(LocoEnv):
             mjx_backend=mjx_backend,
             **kwargs,
         )
+        self._perturbation_dof_index = resolve_joint_dof_index(
+            self._model, self._perturbation_config.joint, self._perturbation_config.side
+        )
+        if self._perturbation_config.enabled and self._perturbation_config.onset_mode == "stance_percentage":
+            raise NotImplementedError(
+                "Stance-percentage triggering requires a validated stance-duration estimator"
+            )
+        self._right_contact_sensor_addresses = tuple(
+            int(self._model.sensor_adr[self._model.sensor(name).id]) for name in ("r_foot", "r_toes")
+        )
+        self._left_contact_sensor_addresses = tuple(
+            int(self._model.sensor_adr[self._model.sensor(name).id]) for name in ("l_foot", "l_toes")
+        )
+        actuator_names = tuple(self._model.actuator(index).name for index in self._action_indices)
+        self._reflex_groups = build_lower_body_groups(actuator_names)
+        self._reflex_distribution = distribution_matrix(self._reflex_groups, len(actuator_names))
+        joint_name_by_function = {
+            "hip": "hip_flexion_{suffix}",
+            "knee": "knee_angle_{suffix}",
+            "ankle": "ankle_angle_{suffix}",
+        }
+        reflex_qpos_indices = []
+        reflex_qvel_indices = []
+        reflex_joint_scales = []
+        for group in self._reflex_groups:
+            joint_kind = group.function.split("_", 1)[0]
+            suffix = "r" if group.side == "right" else "l"
+            joint_id = self._model.joint(joint_name_by_function[joint_kind].format(suffix=suffix)).id
+            reflex_qpos_indices.append(int(self._model.jnt_qposadr[joint_id]))
+            reflex_qvel_indices.append(int(self._model.jnt_dofadr[joint_id]))
+            joint_range = self._model.jnt_range[joint_id]
+            reflex_joint_scales.append(max(float(joint_range[1] - joint_range[0]) * 0.5, 0.1))
+        self._reflex_qpos_indices = np.asarray(reflex_qpos_indices, dtype=np.int32)
+        self._reflex_qvel_indices = np.asarray(reflex_qvel_indices, dtype=np.int32)
+        self._reflex_joint_scales = np.asarray(reflex_joint_scales, dtype=np.float32)
+        self._reflex_right_group_mask = np.asarray(
+            [group.side == "right" for group in self._reflex_groups], dtype=bool
+        )
+        self._reflex_pelvis_body_id = self._model.body("sacrum").id
+        self._reflex_stance_gains = self._make_reflex_gains(self._reflex_params.get("stance_gains", {}))
+        self._reflex_swing_gains = self._make_reflex_gains(self._reflex_params.get("swing_gains", {}))
+        impulse_steps = int(np.ceil(self._perturbation_config.duration_s / self.dt))
+        impulse_times = np.arange(impulse_steps, dtype=np.float64) * self.dt
+        impulse_torque = torque_pulse(
+            time_s=impulse_times,
+            onset_s=np.asarray(0.0),
+            duration_s=np.asarray(self._perturbation_config.duration_s),
+            magnitude_nm=np.asarray(self._perturbation_config.magnitude_nm),
+            direction=np.asarray(self._perturbation_config.direction),
+            waveform=self._perturbation_config.waveform,
+            enabled=self._perturbation_config.enabled,
+            backend=np,
+        )
+        self._perturbation_impulse_nms = float(np.sum(impulse_torque) * self.dt)
+
+    def _make_reflex_gains(self, values: dict) -> ReflexGains:
+        """Expand scalar or per-group gain configuration outside compiled steps."""
+        n_groups = len(self._reflex_groups)
+
+        def expand(name):
+            value = np.asarray(values.get(name, 0.0), dtype=np.float32)
+            if value.ndim == 0:
+                return np.full(n_groups, float(value), dtype=np.float32)
+            if value.shape != (n_groups,):
+                raise ValueError(f"reflex {name} gains must be scalar or have {n_groups} entries")
+            return value
+
+        return ReflexGains(*(expand(name) for name in ReflexGains._fields))
+
+    def _init_additional_carry(self, key, model, data, backend):
+        """Initialize fixed-shape reflex state for stable CPU and MJX pytrees."""
+        carry = super()._init_additional_carry(key, model, data, backend)
+        return carry.replace(
+            previous_reflex_residual=backend.zeros(self.info.action_space.shape, dtype=backend.float32),
+            reflex_group_action=backend.zeros(len(self._reflex_groups), dtype=backend.float32),
+            reflex_saturation_fraction=backend.asarray(0.0, dtype=backend.float32),
+        )
+
+    def _apply_reflex_residual(self, action, data, carry, backend):
+        """Add the grouped reflex in normalized policy-action space before control scaling."""
+        if not self._reflex_enabled:
+            return action, carry
+        indices_q = backend.asarray(self._reflex_qpos_indices)
+        indices_v = backend.asarray(self._reflex_qvel_indices)
+        scales = backend.asarray(self._reflex_joint_scales)
+        if self.th is not None:
+            reference = self.th.get_current_traj_data(carry, backend)
+            joint_error = (reference.qpos[indices_q] - data.qpos[indices_q]) / scales
+            joint_velocity = (reference.qvel[indices_v] - data.qvel[indices_v]) / 10.0
+        else:
+            joint_error = -data.qpos[indices_q] / scales
+            joint_velocity = -data.qvel[indices_v] / 10.0
+        right_contact = backend.any(data.sensordata[backend.asarray(self._right_contact_sensor_addresses)] > 0.0)
+        left_contact = backend.any(data.sensordata[backend.asarray(self._left_contact_sensor_addresses)] > 0.0)
+        right_mask = backend.asarray(self._reflex_right_group_mask)
+        stance_weight = backend.where(right_mask, right_contact, left_contact).astype(joint_error.dtype)
+        limb_load = stance_weight
+        rotation = data.xmat[self._reflex_pelvis_body_id].reshape(3, 3)
+        pelvis_roll = backend.arctan2(rotation[2, 1], rotation[2, 2])
+        pelvis_pitch = backend.arctan2(-rotation[2, 0], backend.sqrt(rotation[2, 1] ** 2 + rotation[2, 2] ** 2))
+        pelvis_angle = backend.where(right_mask, pelvis_roll, pelvis_pitch)
+        pelvis_angular_velocity = backend.full_like(joint_error, data.cvel[self._reflex_pelvis_body_id, 1])
+        stance_gains = ReflexGains(*(backend.asarray(value) for value in self._reflex_stance_gains))
+        swing_gains = ReflexGains(*(backend.asarray(value) for value in self._reflex_swing_gains))
+        group_action = compute_reflex_action(
+            joint_error,
+            joint_velocity,
+            limb_load,
+            pelvis_angle,
+            pelvis_angular_velocity,
+            stance_weight,
+            stance_gains,
+            swing_gains,
+            float(self._reflex_params.get("group_limit", 0.25)),
+            enabled=True,
+        )
+        residual = distribute_group_action(group_action, backend.asarray(self._reflex_distribution))
+        muscle_limit = float(self._reflex_params.get("muscle_limit", 0.25))
+        residual = backend.clip(residual, -muscle_limit, muscle_limit)
+        previous = carry.previous_reflex_residual
+        max_delta = float(self._reflex_params.get("rate_limit_per_s", 5.0)) * self.dt
+        residual = previous + backend.clip(residual - previous, -max_delta, max_delta)
+        scale = float(self._reflex_params.get("scale", 1.0))
+        unclipped = action + scale * residual
+        composed = backend.clip(unclipped, -1.0, 1.0)
+        saturation = backend.mean((unclipped < -1.0) | (unclipped > 1.0))
+        return composed, carry.replace(
+            previous_reflex_residual=residual,
+            reflex_group_action=group_action,
+            reflex_saturation_fraction=saturation,
+        )
+
+    def _preprocess_action(self, action, model, data, carry):
+        action, carry = super()._preprocess_action(action, model, data, carry)
+        return self._apply_reflex_residual(action, data, carry, np)
+
+    def _mjx_preprocess_action(self, action, model, data, carry):
+        action, carry = super()._mjx_preprocess_action(action, model, data, carry)
+        return self._apply_reflex_residual(action, data, carry, jnp)
+
+    def _update_perturbation(self, data, carry, backend):
+        """Update one-shot state and compute external torque for this step."""
+        config = self._perturbation_config
+        step = backend.asarray(carry.cur_step_in_episode - 1, dtype=backend.int32)
+        phase_fraction = None
+        if config.onset_mode == "phase":
+            if self.th is None:
+                raise ValueError("Reference-phase triggering requires a loaded trajectory")
+            trajectory_length = self.th.len_trajectory(carry.traj_state.traj_no)
+            phase_fraction = carry.traj_state.subtraj_step_no / backend.maximum(trajectory_length - 1, 1)
+        right_contact = backend.any(data.sensordata[backend.asarray(self._right_contact_sensor_addresses)] > 0.0)
+        left_contact = backend.any(data.sensordata[backend.asarray(self._left_contact_sensor_addresses)] > 0.0)
+        selected_contact = right_contact if config.side == "right" else left_contact
+        previous_contact = (
+            carry.previous_right_foot_contact if config.side == "right" else carry.previous_left_foot_contact
+        )
+        heel_strike_event = selected_contact & ~previous_contact
+        state = PerturbationState(carry.perturbation_triggered, carry.perturbation_onset_step)
+        state, _ = update_perturbation_trigger(
+            state,
+            step,
+            self.dt,
+            config.onset_mode,
+            onset_time_s=config.onset_time_s,
+            phase_fraction=phase_fraction,
+            onset_phase=config.onset_phase,
+            phase_tolerance=config.phase_tolerance,
+            heel_strike_event=heel_strike_event,
+        )
+        state = PerturbationState(
+            triggered=backend.where(config.enabled, state.triggered, carry.perturbation_triggered),
+            onset_step=backend.where(config.enabled, state.onset_step, carry.perturbation_onset_step),
+        )
+        torque_nm = triggered_torque(
+            state, step, self.dt, config.duration_s, config.magnitude_nm, config.direction, config.waveform
+        )
+        torque_nm = backend.where(config.enabled, torque_nm, backend.asarray(0.0))
+        carry = carry.replace(
+            perturbation_triggered=state.triggered,
+            perturbation_onset_step=state.onset_step,
+            previous_right_foot_contact=right_contact,
+            previous_left_foot_contact=left_contact,
+        )
+        return carry, torque_nm
+
+    def _simulation_pre_step(self, model, data, carry):
+        """Apply CPU MuJoCo exoskeleton torque separately from muscle controls."""
+        model, data, carry = super()._simulation_pre_step(model, data, carry)
+        carry, torque_nm = self._update_perturbation(data, carry, np)
+        data.qfrc_applied[self._perturbation_dof_index] = float(torque_nm)
+        return model, data, carry
+
+    def _mjx_simulation_pre_step(self, model, data, carry):
+        """Apply JAX-vectorizable exoskeleton torque separately from `data.ctrl`."""
+        model, data, carry = super()._mjx_simulation_pre_step(model, data, carry)
+        carry, torque_nm = self._update_perturbation(data, carry, jnp)
+        qfrc_applied = data.qfrc_applied.at[self._perturbation_dof_index].set(torque_nm)
+        return model, data.replace(qfrc_applied=qfrc_applied), carry
+
+    def _update_info_dictionary(self, info, obs, data, carry):
+        """Log CPU perturbation diagnostics in SI units."""
+        info = super()._update_info_dictionary(info, obs, data, carry)
+        info["perturbation_torque_nm"] = float(data.qfrc_applied[self._perturbation_dof_index])
+        info["perturbation_requested_torque_nm"] = (
+            self._perturbation_config.direction * self._perturbation_config.magnitude_nm
+        )
+        info["perturbation_dof_index"] = self._perturbation_dof_index
+        onset_s = float(carry.perturbation_onset_step) * self.dt
+        info["perturbation_onset_s"] = onset_s if carry.perturbation_onset_step >= 0 else -1.0
+        info["perturbation_stop_s"] = (
+            onset_s + self._perturbation_config.duration_s if carry.perturbation_onset_step >= 0 else -1.0
+        )
+        info["perturbation_impulse_nms"] = self._perturbation_impulse_nms
+        info["reflex_enabled"] = self._reflex_enabled
+        info["reflex_saturation_fraction"] = float(carry.reflex_saturation_fraction)
+        info["reflex_group_action"] = (
+            np.zeros(len(self._reflex_groups), dtype=np.float32)
+            if carry.reflex_group_action is None
+            else np.asarray(carry.reflex_group_action)
+        )
+        return info
+
+    def _mjx_update_info_dictionary(self, info, obs, data, carry):
+        """Log MJX perturbation diagnostics without leaving traced array code."""
+        info = super()._mjx_update_info_dictionary(info, obs, data, carry)
+        info["perturbation_torque_nm"] = data.qfrc_applied[self._perturbation_dof_index]
+        info["perturbation_requested_torque_nm"] = jnp.asarray(
+            self._perturbation_config.direction * self._perturbation_config.magnitude_nm
+        )
+        info["perturbation_dof_index"] = jnp.asarray(self._perturbation_dof_index, dtype=jnp.int32)
+        onset_s = carry.perturbation_onset_step * self.dt
+        info["perturbation_onset_s"] = jnp.where(carry.perturbation_onset_step >= 0, onset_s, -1.0)
+        info["perturbation_stop_s"] = jnp.where(
+            carry.perturbation_onset_step >= 0,
+            onset_s + self._perturbation_config.duration_s,
+            -1.0,
+        )
+        info["reflex_enabled"] = jnp.asarray(self._reflex_enabled)
+        info["reflex_saturation_fraction"] = carry.reflex_saturation_fraction
+        info["reflex_group_action"] = (
+            jnp.zeros(len(self._reflex_groups), dtype=jnp.float32)
+            if carry.reflex_group_action is None
+            else carry.reflex_group_action
+        )
+        info["perturbation_impulse_nms"] = jnp.asarray(self._perturbation_impulse_nms)
+        return info
 
     def _apply_spec_changes(self, spec: MjSpec) -> MjSpec:
         """

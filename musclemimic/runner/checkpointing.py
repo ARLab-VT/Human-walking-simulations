@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -291,10 +292,22 @@ def _canonicalize_resume_path(path_like: str, revision: str = None) -> str:
             metadata_file = metadata_file.resolve()
         with open(metadata_file) as f:
             step = json.load(f).get("update_number", 0)
-        # Create symlink with expected name in parent directory
-        symlink_path = p.parent / f"checkpoint_{step}"
+        # Give Orbax an isolated parent containing only this checkpoint. Using
+        # `p.parent` makes CheckpointManager scan every downloaded checkpoint,
+        # which is very slow and unreliable when those entries are symlinks.
+        compatibility_dir = p.parent / f".orbax_compat_{p.name}"
+        compatibility_dir.mkdir(exist_ok=True)
+        symlink_path = compatibility_dir / f"checkpoint_{step}"
+        if symlink_path.is_symlink():
+            symlink_path.unlink()
         if not symlink_path.exists():
-            symlink_path.symlink_to(p)
+            # Orbax's asynchronous path metadata scan can stall on directory
+            # symlinks. A hard-linked compatibility tree is directory-real,
+            # consumes negligible extra data space, and stays on one filesystem.
+            try:
+                shutil.copytree(p.resolve(), symlink_path, copy_function=os.link)
+            except OSError:
+                shutil.copytree(p.resolve(), symlink_path)
         return str(symlink_path)
 
     # Not a recognizable checkpoint location

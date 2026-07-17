@@ -1,3 +1,45 @@
+# Human Walking Simulations: Reflex-Recovery Study
+
+This repository contains the ARLab-VT reflex-recovery study for perturbed,
+muscle-actuated human walking. It extends the upstream MuscleMimic framework
+with reproducible perturbations, phase-dependent reflex residuals, recovery
+gating, frozen-policy comparisons, scientific metrics, plots, and videos.
+
+## Study navigation
+
+| Resource | Purpose |
+| --- | --- |
+| [Executable study notebook](notebooks/01_musclemimic_reflex_recovery_study.ipynb) | Main implementation narrative, file map, validation cells, plots, and video comparisons. |
+| [Simulation study specification](docs/simulation_study.md) | Complete scientific plan, phases, experiments, metrics, ablations, and acceptance gates. |
+| [Codebase audit](docs/reflex_recovery_codebase_audit.md) | Model/action-path evidence and implementation decisions. |
+| [Reflex-recovery package](musclemimic/research/reflex_recovery/) | Reusable perturbation, reflex, delay, gate, recovery, action-composition, and metric modules. |
+| [Experiment configurations](fullbody/) | Smoke, training, evaluation, ablation, and walking-disturbance Hydra configurations. |
+| [Focused tests](tests/reflex_recovery/) | Unit and integration checks for the scientific implementation. |
+| [Repository maintenance guide](docs/repository_maintenance.md) | Branching, upstream synchronization, validation, artifact, and release workflow. |
+
+## Reproducibility and current scope
+
+The released base policy, deterministic baseline, perturbation-only rollout,
+and base-plus-reflex rollout are validated. Residual recovery-policy training
+and multi-seed robustness claims remain gated by the acceptance criteria in the
+study specification. The notebook labels completed, partial, and open phases
+explicitly so exploratory results are not presented as final evidence.
+
+Generated checkpoints, gated datasets, rollout arrays, caches, and videos are
+intentionally excluded from Git. They can be regenerated with the documented
+commands and should be distributed through an appropriate artifact store or a
+versioned release rather than committed to source history.
+
+## Project lineage and license
+
+This study is derived from
+[amathislab/musclemimic](https://github.com/amathislab/musclemimic). The
+upstream Git history, attribution, and Apache License 2.0 are retained. Study
+changes are developed on reviewable branches and synchronized with the
+upstream project as described in the maintenance guide.
+
+---
+
 <p align="center">
   <img src="./assets/banner.jpg" alt="Banner" width="100%">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-76B900.svg" alt="License"></a>
@@ -8,7 +50,9 @@
   </a>
 </p>
 
-# MuscleMimic: Unlocking full-body musculoskeletal motor learning at scale
+# Upstream framework: MuscleMimic
+
+## Unlocking full-body musculoskeletal motor learning at scale
 
 **MuscleMimic** is a JAX-based motion imitation learning benchmark for
 biomechanically accurate, muscle-actuated models. It targets full-body
